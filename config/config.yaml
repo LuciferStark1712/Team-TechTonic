@@ -1,0 +1,38 @@
+model:
+  weights: yolo11n.pt
+  conf_threshold: 0.35
+  iou_threshold: 0.45
+
+video:
+  output_path: outputs/annotated_output.mp4
+  max_frames: 0  # 0 means process full video
+
+human_verification:
+  min_aspect_ratio: 1.1
+  max_aspect_ratio: 4.5
+  min_area_ratio: 0.002
+  min_edge_density: 0.045
+  shadow_max_saturation: 45
+  shadow_max_value_std: 25
+  min_texture_var: 120.0
+
+behavior:
+  running_speed_threshold_px_s: 220.0
+  loitering_seconds: 12.0
+  loitering_max_radius_px: 80.0
+  loitering_min_radius_px: 10.0
+  loitering_max_speed_px_s: 90.0
+  motion_jitter_px: 6.0
+  running_min_displacement_px: 120.0
+  min_track_age_for_alert: 10
+
+risk:
+  running_weight: 0.45
+  loitering_weight: 0.35
+  confidence_weight: 0.20
+  alert_threshold: 0.55
+
+logging:
+  json_log_path: outputs/logs/alerts.jsonl
+  csv_log_path: outputs/logs/alerts.csv
+  snapshot_dir: outputs/snapshots
