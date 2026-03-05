@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 
 import pandas as pd
 import streamlit as st
@@ -52,6 +54,35 @@ def risk_color(level: str) -> str:
     return RISK_GREEN
 
 
+def detect_sustained_high_risk(
+    alerts: pd.DataFrame,
+    threshold: float = 0.7,
+    min_duration_s: float = 60.0,
+    max_gap_s: float = 8.0,
+) -> tuple[bool, float]:
+    if alerts.empty or "timestamp_s" not in alerts.columns or "risk_score" not in alerts.columns:
+        return False, 0.0
+
+    high = alerts[alerts["risk_score"] >= threshold].sort_values("timestamp_s")
+    if high.empty:
+        return False, 0.0
+
+    best_span = 0.0
+    start_t = float(high.iloc[0]["timestamp_s"])
+    prev_t = start_t
+
+    for _, row in high.iloc[1:].iterrows():
+        t = float(row["timestamp_s"])
+        if t - prev_t <= max_gap_s:
+            prev_t = t
+            best_span = max(best_span, prev_t - start_t)
+            continue
+        start_t = t
+        prev_t = t
+
+    return best_span >= min_duration_s, round(best_span, 1)
+
+
 def load_alert_frames(files: list[Path]) -> tuple[pd.DataFrame, list[dict]]:
     frames: list[pd.DataFrame] = []
     file_status: list[dict] = []
@@ -78,17 +109,7 @@ def load_alert_frames(files: list[Path]) -> tuple[pd.DataFrame, list[dict]]:
 # ---------- File discovery ----------
 logs_dir = Path("outputs/logs")
 all_csv_files = sorted(logs_dir.glob("alerts*.csv"))
-
-if not all_csv_files:
-    st.title("ThreatSense AI-DVR")
-    st.info(
-        "No alert logs found yet.\n\n"
-        "Steps:\n"
-        "1. Run inference on recorded video or webcam\n"
-        "2. Confirm CSV logs exist in outputs/logs\n"
-        "3. Reload dashboard"
-    )
-    st.stop()
+project_root = Path(__file__).resolve().parents[1]
 
 recorded_files: list[Path] = []
 live_files: list[Path] = []
@@ -109,19 +130,86 @@ st.caption("Threat summary by mode")
 with st.sidebar:
     st.header("View")
     mode = st.radio("Mode", ["Recorded", "Live"], index=0)
+    live_config_path = st.text_input("Live Config", "config/config_demo.yaml")
+    camera_index = st.number_input("Camera Index", min_value=0, max_value=10, value=0, step=1)
+    show_live_preview = st.checkbox("Show Live Preview Window", value=True)
+
+if "live_proc" not in st.session_state:
+    st.session_state.live_proc = None
+if "last_live_file" not in st.session_state:
+    st.session_state.last_live_file = None
+
+
+def _live_running() -> bool:
+    proc = st.session_state.live_proc
+    return proc is not None and proc.poll() is None
+
+
+def _start_live() -> None:
+    if _live_running():
+        return
+    cmd = [
+        sys.executable,
+        "src/main.py",
+        "--config",
+        live_config_path,
+        "--webcam",
+        "--camera-index",
+        str(int(camera_index)),
+    ]
+    if show_live_preview:
+        cmd.append("--show-live")
+    st.session_state.live_proc = subprocess.Popen(cmd, cwd=str(project_root))
+
+
+def _stop_live() -> None:
+    proc = st.session_state.live_proc
+    if proc is None:
+        return
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    st.session_state.live_proc = None
 
 if mode == "Recorded":
     selected_files = recorded_files
     mode_label = "Recorded Footage"
     live_session_name = ""
 else:
+    with st.sidebar:
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Start Live", use_container_width=True):
+                _start_live()
+        with c2:
+            if st.button("Stop Live", use_container_width=True):
+                _stop_live()
+        if _live_running():
+            st.success("Live capture running")
+        else:
+            st.info("Live capture stopped")
+
+    all_csv_files = sorted(logs_dir.glob("alerts*.csv"))
+    live_files = []
+    for f in all_csv_files:
+        vname = video_name_from_file(f)
+        if vname.startswith("webcam_"):
+            live_files.append(f)
+
     if live_files:
         latest_live_file = max(live_files, key=lambda p: p.stat().st_mtime)
         selected_files = [latest_live_file]
         live_session_name = video_name_from_file(latest_live_file)
+        st.session_state.last_live_file = latest_live_file
     else:
         selected_files = []
         live_session_name = ""
+        if st.session_state.last_live_file is not None:
+            selected_files = [Path(st.session_state.last_live_file)]
+            live_session_name = video_name_from_file(Path(st.session_state.last_live_file))
     mode_label = "Latest Live Session"
 
 if not selected_files:
@@ -147,6 +235,21 @@ alerts["timestamp_s"] = pd.to_numeric(alerts.get("timestamp_s", 0), errors="coer
 alerts["snapshot_file"] = alerts["snapshot_path"].astype(str).apply(lambda x: Path(x).name)
 alerts["event_badge"] = alerts["event_type"].map(EVENT_BADGE).fillna("🟢 Normal")
 alerts = alerts.reset_index(drop=True)
+
+# Automatic sustained-risk banner for CCTV-style continuous monitoring.
+is_sustained, sustained_seconds = detect_sustained_high_risk(
+    alerts,
+    threshold=0.7,
+    min_duration_s=60.0,
+    max_gap_s=8.0,
+)
+if is_sustained:
+    st.error(
+        f"ALERT: Sustained high risk detected for {sustained_seconds}s "
+        "(risk_score >= 0.70). Immediate security check recommended."
+    )
+else:
+    st.success("No sustained high-risk pattern detected in the current view.")
 
 
 # ---------- Threat summary ----------
