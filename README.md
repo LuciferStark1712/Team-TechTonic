@@ -5,7 +5,7 @@
 
 ## Team Details
 
-**- Team Name: Tech Tonic 
+**- Team Name: Tech Tonic **
 - **Members:**
 - Tanvi Nanaware
 - Swanand Kalekar
@@ -22,6 +22,7 @@
 Traditional CCTV surveillance systems rely on simple motion detection, which often triggers a large number of false alarms caused by shadows, animals, or environmental changes. This leads to alarm fatigue for security personnel and reduces the effectiveness of monitoring. There is a need for an intelligent surveillance system that can accurately detect human presence and analyze behavior to identify suspicious activities such as loitering or rapid movement while filtering out false alerts. 
 
 **Solution: ** 
+
 Fusion Eye is a lightweight AI-powered surveillance system designed to transform traditional CCTV cameras into intelligent security monitoring tools. The system detects human presence and analyzes behavioral patterns in real time to identify suspicious activities while reducing false alarms caused by shadows, animals, or environmental motion.
 The system processes live video input from a camera and applies a multi-stage analysis pipeline to detect potential threats.
 
@@ -34,6 +35,7 @@ The model identifies bounding boxes around detected persons and filters out irre
 
 ⚡ 3. False Positive Filtering
 To reduce incorrect alerts caused by shadows or environmental effects, the system performs additional computer vision analysis using:
+
 •	Edge Density Analysis
 •	HSV Color Analysis
 •	Texture Preservation Checks
@@ -43,13 +45,14 @@ These checks help distinguish real human objects from shadows, animals, or light
 The detected objects are further verified using visual characteristics such as:
 •	Body proportion
 •	Shape analysis
-•	Surface texture
+• Surface texture
 This step ensures the detected object is actually a human.
 
 🏃 5. Behavior Analysis
 Once a human is confirmed, the system analyzes movement patterns and duration of presence to detect suspicious behaviors such as:
-•	⏳ Loitering – when a person remains in the same area for an extended period
-•	⚡ Running or sudden movement – indicating potential abnormal activity
+
+•	 Loitering – when a person remains in the same area for an extended period
+•	 Running or sudden movement – indicating potential abnormal activity
 
 💡 6. Explainable Alerts
 When suspicious behavior is detected, the system generates an alert along with a clear explanation describing why the alert was triggered.
@@ -59,6 +62,7 @@ Person present in frame for more than 10 seconds
 
 📊 7. Output Dashboard
 The final output is displayed on a monitoring dashboard that includes:
+
 •	 Live video feed
 •	 Alert notifications
 •	Event logs and snapshots
