@@ -83,6 +83,7 @@ def detect_sustained_high_risk(
     return best_span >= min_duration_s, round(best_span, 1)
 
 
+@st.cache_data(ttl=2, show_spinner=False)
 def load_alert_frames(files: list[Path]) -> tuple[pd.DataFrame, list[dict]]:
     frames: list[pd.DataFrame] = []
     file_status: list[dict] = []
@@ -102,7 +103,8 @@ def load_alert_frames(files: list[Path]) -> tuple[pd.DataFrame, list[dict]]:
         df["video_name"] = vname
         frames.append(df)
 
-    alerts = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    cols = ["timestamp_s", "frame_idx", "track_id", "risk_score", "event_type", "confidence", "explanation", "snapshot_path", "video_name"]
+    alerts = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=cols)
     return alerts, file_status
 
 
@@ -123,21 +125,32 @@ for f in all_csv_files:
 recorded_footages_uploaded = len({video_name_from_file(f) for f in recorded_files})
 
 
-# ---------- Header + mode ----------
-st.title("ThreatSense AI-DVR")
-st.caption("Threat summary by mode")
-
+# ---------- Sidebar Control ----------
+mode = "Recorded"  # Default
 with st.sidebar:
     st.header("View")
     mode = st.radio("Mode", ["Recorded", "Live"], index=0)
     live_config_path = st.text_input("Live Config", "config/config_demo.yaml")
     camera_index = st.number_input("Camera Index", min_value=0, max_value=10, value=0, step=1)
-    show_live_preview = st.checkbox("Show Live Preview Window", value=True)
+    # Use external OpenCV preview window for live mode.
+    show_live_preview = True
+
+# ---------- Header + Image ----------
+st.title("ThreatSense AI-DVR")
+st.caption("Threat summary by mode")
+
+if mode == "Live":
+    st.info("Live camera opens in a separate window. Press 'q' in that window to stop preview.")
+
 
 if "live_proc" not in st.session_state:
     st.session_state.live_proc = None
 if "last_live_file" not in st.session_state:
     st.session_state.last_live_file = None
+if "live_session_file" not in st.session_state:
+    st.session_state.live_session_file = None
+if "live_existing_files" not in st.session_state:
+    st.session_state.live_existing_files = set()
 
 
 def _live_running() -> bool:
@@ -148,6 +161,24 @@ def _live_running() -> bool:
 def _start_live() -> None:
     if _live_running():
         return
+    
+    # Auto-delete old webcam logs and snapshots to keep only "present footage"
+    Path("outputs/live_feed.jpg").unlink(missing_ok=True)
+    for f in logs_dir.glob("alerts_webcam_*.csv"):
+        f.unlink(missing_ok=True)
+    for f in logs_dir.glob("alerts_webcam_*.jsonl"):
+        f.unlink(missing_ok=True)
+    
+    snap_dir = Path("outputs/snapshots")
+    if snap_dir.exists():
+        import shutil
+        for d in snap_dir.glob("webcam_*"):
+            if d.is_dir():
+                shutil.rmtree(d, ignore_errors=True)
+
+    st.session_state.live_existing_files = set()
+    st.session_state.live_session_file = None
+    st.session_state.last_live_file = None
     cmd = [
         sys.executable,
         "src/main.py",
@@ -180,51 +211,42 @@ if mode == "Recorded":
     live_session_name = ""
 else:
     with st.sidebar:
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Start Live", use_container_width=True):
-                _start_live()
-        with c2:
-            if st.button("Stop Live", use_container_width=True):
-                _stop_live()
         if _live_running():
-            st.success("Live capture running")
+            st.success("CCTV Monitoring Active")
         else:
-            st.info("Live capture stopped")
+            # Auto-start CCTV if not running
+            _start_live()
+            st.rerun()
 
     all_csv_files = sorted(logs_dir.glob("alerts*.csv"))
-    live_files = []
-    for f in all_csv_files:
-        vname = video_name_from_file(f)
-        if vname.startswith("webcam_"):
-            live_files.append(f)
+    live_files = [f for f in all_csv_files if video_name_from_file(f).startswith("webcam_")]
 
+    selected_live_file: Path | None = None
     if live_files:
-        latest_live_file = max(live_files, key=lambda p: p.stat().st_mtime)
-        selected_files = [latest_live_file]
-        live_session_name = video_name_from_file(latest_live_file)
-        st.session_state.last_live_file = latest_live_file
+        selected_live_file = max(live_files, key=lambda p: p.stat().st_mtime)
+
+    if selected_live_file is not None:
+        selected_files = [selected_live_file]
+        live_session_name = video_name_from_file(selected_live_file)
     else:
         selected_files = []
         live_session_name = ""
-        if st.session_state.last_live_file is not None:
-            selected_files = [Path(st.session_state.last_live_file)]
-            live_session_name = video_name_from_file(Path(st.session_state.last_live_file))
-    mode_label = "Latest Live Session"
+    mode_label = "Live Session"
 
 if not selected_files:
     if mode == "Recorded":
         st.warning("No recorded-footage logs found yet.")
+        st.stop()
     else:
-        st.warning("No live webcam session logs found yet.")
-    st.stop()
+        # In Live mode, we continue to show the dashboard metrics (all 0) even if no session file exists yet.
+        pass
 
 alerts, file_status = load_alert_frames(selected_files)
 
 if alerts.empty:
-    st.warning(f"{mode_label} found, but there are no alert rows yet.")
-    st.dataframe(pd.DataFrame(file_status), use_container_width=True)
-    st.stop()
+    st.info(f"{mode_label}: Active monitoring... No threats detected in the current session.")
+else:
+    st.success("Monitoring session active.")
 
 
 # ---------- Prepare alert dataframe ----------
@@ -253,14 +275,18 @@ else:
 
 
 # ---------- Threat summary ----------
-mean_risk = float(alerts["risk_score"].mean())
-max_risk = float(alerts["risk_score"].max())
-threat_score = round((0.4 * mean_risk + 0.6 * max_risk) * 100.0, 1)
+if not alerts.empty:
+    mean_risk = float(alerts["risk_score"].mean())
+    max_risk = float(alerts["risk_score"].max())
+    threat_score = round((0.4 * mean_risk + 0.6 * max_risk) * 100.0, 1)
+else:
+    threat_score = 0.0
+
 overall_level = risk_level_from_score(threat_score / 100.0)
 color = risk_color(overall_level)
 
 subtitle = mode_label
-if mode == "Live" and live_session_name:
+if live_session_name:
     subtitle = f"{mode_label}: {live_session_name}"
 
 st.markdown(f"**{subtitle}**")
@@ -275,22 +301,29 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Total Alerts", int(len(alerts)))
-c2.metric("High Risk Alerts", int((alerts["risk_score"] > 0.7).sum()))
-c3.metric("Running", int((alerts["event_type"] == "running").sum()))
-c4.metric("Loitering", int((alerts["event_type"] == "loitering").sum()))
 if mode == "Recorded":
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total Alerts", int(len(alerts)))
+    c2.metric("High Risk Alerts", int((alerts["risk_score"] > 0.7).sum()))
+    c3.metric("Running", int((alerts["event_type"] == "running").sum()))
+    c4.metric("Loitering", int((alerts["event_type"] == "loitering").sum()))
     c5.metric("Footages Uploaded", int(recorded_footages_uploaded))
 else:
-    c5.metric("Live Sessions", int(len(live_files)))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Alerts", int(len(alerts)))
+    c2.metric("High Risk Alerts", int((alerts["risk_score"] > 0.7).sum()))
+    c3.metric("Running", int((alerts["event_type"] == "running").sum()))
+    c4.metric("Loitering", int((alerts["event_type"] == "loitering").sum()))
 
 
 # ---------- Trend ----------
 st.subheader("Risk Trend")
-trend = alerts.sort_values("timestamp_s").copy()
-trend = trend[["timestamp_s", "risk_score"]].rename(columns={"timestamp_s": "time_s"})
-st.line_chart(trend.set_index("time_s"))
+if not alerts.empty:
+    trend = alerts.sort_values("timestamp_s").copy()
+    trend = trend[["timestamp_s", "risk_score"]].rename(columns={"timestamp_s": "time_s"})
+    st.line_chart(trend.set_index("time_s"))
+else:
+    st.info("No risk data to plot yet.")
 
 
 # ---------- Alert table ----------
@@ -307,15 +340,24 @@ show_cols = [
 ]
 st.dataframe(alerts[show_cols].sort_values("timestamp_s", ascending=False), use_container_width=True, height=320)
 
-
 # ---------- Snapshot ----------
 st.subheader("Snapshot")
-idx = st.number_input("Select alert row", min_value=0, max_value=max(len(alerts) - 1, 0), value=0, step=1)
-row = alerts.iloc[int(idx)]
-snap = Path(str(row["snapshot_path"]))
-st.write(f"Event: {row['event_badge']} | Risk: {row['risk_score']:.2f} | Video: {row['video_name']}")
-st.write(f"Explanation: {row['explanation']}")
-if snap.exists():
-    st.image(str(snap), caption=row["snapshot_file"], use_column_width=True)
+if not alerts.empty:
+    idx = st.number_input("Select alert row", min_value=0, max_value=max(len(alerts) - 1, 0), value=0, step=1)
+    row = alerts.iloc[int(idx)]
+    snap = Path(str(row["snapshot_path"]))
+    st.write(f"Event: {row['event_badge']} | Risk: {row['risk_score']:.2f} | Video: {row['video_name']}")
+    st.write(f"Explanation: {row['explanation']}")
+    if snap.exists():
+        st.image(str(snap), caption=row["snapshot_file"], use_column_width=True)
+    else:
+        st.info("Snapshot not found for this alert.")
 else:
-    st.info("Snapshot not found for this alert.")
+    st.info("No snapshots available (no alerts detected).")
+
+# ---------- Auto-Refresh ----------
+import time
+if mode == "Live":
+    time.sleep(2)
+    st.rerun()
+

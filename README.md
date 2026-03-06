@@ -84,6 +84,7 @@ This helps security personnel quickly understand and respond to potential threat
 
 List any external libraries, APIs, or datasets used here.
 
+dataset used - https://www.kaggle.com/datasets/izharzour/cctv-footages-for-theft-detection
 ---
 
 > *"The world is not enough — but it is such a perfect place to start."* — James Bond
